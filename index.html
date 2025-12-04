@@ -94,7 +94,7 @@
         let selectedDayFilter = 'All'; // Current filter state
         let showAvailableOnly = false; // Availability filter state
         let isAdmin = false; // User's admin status (UID check)
-        let isAdminModeEnabled = false; // NEW: Toggle state for enabling admin actions
+        let isAdminModeEnabled = false; // Toggle state for enabling admin actions
         
         // ** IMPORTANT: ADMIN UIDs **
         // Replace these placeholder UIDs with the actual UIDs of your club administrators
@@ -166,11 +166,14 @@
             { day: "Sunday", time: "4:00 PM - 5:00 PM", field: "Field 2", miniFieldTime: "5:00 PM - 5:30 PM", Occupant: "", Team: "" },
             { day: "Sunday", time: "5:00 PM - 6:00 PM", field: "Field 1", miniFieldTime: "4:30 PM - 5:00 PM", Occupant: "", Team: "" },
             { day: "Sunday", time: "5:00 PM - 6:00 PM", field: "Field 2", miniFieldTime: "6:00 PM - 6:30 PM", Occupant: "", Team: "" },
-            // NEW SUNDAY SLOTS (6 PM - 8 PM)
+            // Sunday 6 PM - 8 PM
             { day: "Sunday", time: "6:00 PM - 7:00 PM", field: "Field 1", miniFieldTime: "5:30 PM - 6:00 PM", Occupant: "", Team: "" },
             { day: "Sunday", time: "6:00 PM - 7:00 PM", field: "Field 2", miniFieldTime: "7:00 PM - 7:30 PM", Occupant: "", Team: "" },
             { day: "Sunday", time: "7:00 PM - 8:00 PM", field: "Field 1", miniFieldTime: "6:30 PM - 7:00 PM", Occupant: "", Team: "" },
             { day: "Sunday", time: "7:00 PM - 8:00 PM", field: "Field 2", miniFieldTime: "8:00 PM - 8:30 PM", Occupant: "", Team: "" },
+            // Sunday 8 PM - 9 PM
+            { day: "Sunday", time: "8:00 PM - 9:00 PM", field: "Field 1", miniFieldTime: "7:30 PM - 8:00 PM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "8:00 PM - 9:00 PM", field: "Field 2", miniFieldTime: "9:00 PM - 9:30 PM", Occupant: "", Team: "" },
             
             // Monday (Occupied slots from CSV)
             { day: "Monday", time: "6:00 PM - 7:00 PM", field: "Field 1", miniFieldTime: "5:30 PM - 6:00 PM", Occupant: "Saltz U18/Goal Keepers", Team: "Saltz U18/Goal Keepers" },
@@ -401,6 +404,25 @@
             if (showAvailableOnly) {
                 slotsToRender = slotsToRender.filter(slot => !slot.isFull);
             }
+
+            // 3. Apply My Bookings Filter (NEW)
+            if (showMyBookingsOnly) {
+                if (currentUserId) {
+                    slotsToRender = slotsToRender.filter(slot => slot.isUserBooked);
+                } else {
+                    showMessage('Please log in to filter by your bookings.', 'warning');
+                    document.getElementById('my-bookings-toggle').checked = false;
+                    showMyBookingsOnly = false;
+                    // Re-render without the filter applied
+                    slotsToRender = allSlots;
+                    if (selectedDayFilter !== 'All') {
+                        slotsToRender = slotsToRender.filter(slot => slot.day === selectedDayFilter);
+                    }
+                    if (showAvailableOnly) {
+                        slotsToRender = slotsToRender.filter(slot => !slot.isFull);
+                    }
+                }
+            }
             
             renderSlots(slotsToRender);
         };
@@ -413,6 +435,12 @@
         // Event listener for the "Show Available Only" toggle
         document.getElementById('available-toggle').addEventListener('change', (e) => {
             showAvailableOnly = e.target.checked;
+            filterAndRenderSlots();
+        });
+        
+        // NEW: Event listener for "Show My Bookings" toggle
+        document.getElementById('my-bookings-toggle').addEventListener('change', (e) => {
+            showMyBookingsOnly = e.target.checked;
             filterAndRenderSlots();
         });
 
@@ -444,9 +472,12 @@
         };
 
         // 4. Render Slots UI
+        let lastDay = null; // Variable to track day change
+
         const renderSlots = (slots) => {
             const container = document.getElementById('slots-container');
             container.innerHTML = ''; // Clear previous content
+            lastDay = null; // Reset day tracker on each render
 
             if (slots.length === 0) {
                 container.innerHTML = '<p class="text-center text-gray-500 py-8">No training slots currently defined for this filter.</p>';
@@ -454,6 +485,28 @@
             }
 
             slots.forEach(slot => {
+                // --- Day Divider Logic (NEW) ---
+                if (slot.day !== lastDay) {
+                    const dividerHtml = `
+                        <div class="col-span-full py-2 mt-4 mb-2">
+                            <div class="relative">
+                                <div class="absolute inset-0 flex items-center">
+                                    <div class="w-full border-t border-gray-300"></div>
+                                </div>
+                                <div class="relative flex justify-center">
+                                    <span class="px-3 bg-f3f4f6 text-xl font-bold text-gray-800 bg-white border border-gray-200 rounded-full shadow-md">
+                                        ${slot.day}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    container.insertAdjacentHTML('beforeend', dividerHtml);
+                    lastDay = slot.day;
+                }
+                // --- End Day Divider Logic ---
+
+
                 const isFull = slot.isFull;
                 const isUserBooked = slot.isUserBooked;
                 const availableSpots = slot.capacity - slot.signedUpTeams.length;
@@ -823,7 +876,13 @@
                     <label for="available-toggle" class="text-gray-700 font-medium cursor-pointer">Show Available Only</label>
                 </div>
                 
-                <!-- NEW: Admin Toggle Container (Visible only to logged-in admins) -->
+                <!-- NEW: My Bookings Toggle -->
+                <div id="my-bookings-container" class="flex items-center space-x-3 cursor-pointer select-none">
+                    <input type="checkbox" id="my-bookings-toggle" class="h-5 w-5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500 transition duration-150 ease-in-out cursor-pointer">
+                    <label for="my-bookings-toggle" class="text-gray-700 font-medium cursor-pointer">Show My Bookings</label>
+                </div>
+                
+                <!-- Admin Toggle Container (Visible only to logged-in admins) -->
                 <div id="admin-toggle-container" class="hidden flex items-center space-x-3 cursor-pointer select-none">
                     <input type="checkbox" id="admin-mode-toggle" onchange="toggleAdminMode(event)" class="h-5 w-5 text-red-600 rounded border-gray-300 focus:ring-red-500 transition duration-150 ease-in-out cursor-pointer">
                     <label for="admin-mode-toggle" class="text-red-700 font-medium cursor-pointer">Enable Admin Reset</label>
