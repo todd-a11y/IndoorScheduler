@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Club Training Slot Sign-up</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Outfit Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: #f3f4f6; /* Cool gray-100 */
+        }
+        
+        /* Smooth fade in */
+        .fade-in {
+            animation: fadeIn 0.3s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Custom scrollbar */
+        .slot-list::-webkit-scrollbar {
+            width: 6px;
+        }
+        .slot-list::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .slot-list::-webkit-scrollbar-thumb {
+            background-color: #cbd5e1;
+            border-radius: 20px;
+        }
+        
+        /* Modern Card Styling */
+        .slot-card {
+            transition: all 0.2s ease-in-out;
+            border: 1px solid #e5e7eb;
+        }
+        
+        /* Hover effect for available slots */
+        .slot-card-available:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.025);
+            border-color: #c7d2fe; /* indigo-200 */
+        }
+
+        /* Modern Button Styles */
+        .btn-primary {
+            background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
+        }
+        .btn-primary:hover:not(:disabled) {
+            background: linear-gradient(135deg, #4338ca 0%, #3730a3 100%);
+            box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.2);
+        }
+        
+        .btn-danger {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        }
+        .btn-danger:hover:not(:disabled) {
+            background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+            box-shadow: 0 4px 6px -1px rgba(239, 68, 68, 0.2);
+        }
+    </style>
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, query, runTransaction, getDocs, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Configuration loaded from your Firebase project: indoor-facility-scheduler
+        const firebaseConfig = {
+            apiKey: "AIzaSyCwd2osR1R4o_x7elLENW0U-Fq79UeR5EU",
+            authDomain: "indoor-facility-scheduler.firebaseapp.com",
+            projectId: "indoor-facility-scheduler",
+            storageBucket: "indoor-facility-scheduler.firebasestorage.app",
+            messagingSenderId: "763643303284",
+            appId: "1:763643303284:web:87b990b1e17c8862644821",
+            measurementId: "G-60GJVX5HRY"
+        }; 
+        
+        // We no longer use the Canvas environment variables
+        const appId = firebaseConfig.projectId; // Use project ID as the application ID
+        const initialAuthToken = null; 
+
+        let db, auth, currentUserId = null;
+        let allSlots = []; // Global state to hold all slots fetched from Firestore
+        let selectedDayFilter = 'All'; // Current filter state
+        let showAvailableOnly = false; // Availability filter state
+        let isAdmin = false; // User's admin status (UID check)
+        let isAdminModeEnabled = false; // NEW: Toggle state for enabling admin actions
+        
+        // ** IMPORTANT: ADMIN UIDs **
+        // Replace these placeholder UIDs with the actual UIDs of your club administrators
+        const ADMIN_USER_IDS = ["vpCjdQlEFXg8sYyMXB0HfO8cF442", "REPLACE_WITH_YOUR_ACTUAL_ADMIN_UID_2"]; 
+        
+        // Configuration and Initialization - Initialize directly:
+        const app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        auth = getAuth(app);
+        // setLogLevel('Debug'); // Optional: Uncomment for debugging
+        
+        // Helper function for base paths
+        const getPublicCollectionRef = (collectionName) => {
+            return collection(db, `artifacts/${appId}/public/data/${collectionName}`);
+        };
+
+        // --- Data Parsing Helpers (Used to build the initialSlots array below) ---
+        const timeTo24Hour = (timeStr) => {
+            const [time, modifier] = timeStr.split(' ');
+            let [hours, minutes] = time.split(':');
+            hours = parseInt(hours, 10);
+            minutes = parseInt(minutes, 10) || 0; 
+
+            if (modifier === 'PM' && hours < 12) {
+                hours += 12;
+            }
+            if (modifier === 'AM' && hours === 12) {
+                hours = 0;
+            }
+            return hours * 100 + minutes;
+        };
+
+        const dayMap = {
+            "Sunday": 0, "Monday": 1, "Tuesday": 2, "Wednesday": 3, "Thursday": 4, "Friday": 5, "Saturday": 6
+        };
+
+        const generateTimestamp = (day, time, field) => {
+            const dayIndex = dayMap[day];
+            // Use the start time of the 1-hour slot for sorting
+            const timeValue = timeTo24Hour(time.split(' - ')[0]);
+            const fieldOffset = field === "Field 2" ? 1 : 0;
+            // Generates a large numeric key for chronological sorting
+            return (dayIndex * 1000000) + (timeValue * 10) + fieldOffset; 
+        };
+        // --- End Helpers ---
+
+        // --------------------------------------------------------------------------------
+        // 1. FULL SCHEDULE DATA EMBEDDED FROM USER'S CSV IMAGE
+        // --------------------------------------------------------------------------------
+        const initialSlotsRaw = [
+            // Sunday
+            { day: "Sunday", time: "8:00 AM - 9:00 AM", field: "Field 1", miniFieldTime: "7:30 AM - 8:00 AM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "8:00 AM - 9:00 AM", field: "Field 2", miniFieldTime: "9:00 AM - 9:30 AM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "9:00 AM - 10:00 AM", field: "Field 1", miniFieldTime: "8:30 AM - 9:00 AM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "9:00 AM - 10:00 AM", field: "Field 2", miniFieldTime: "10:00 AM - 10:30 AM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "10:00 AM - 11:00 AM", field: "Field 1", miniFieldTime: "9:30 AM - 10:00 AM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "10:00 AM - 11:00 AM", field: "Field 2", miniFieldTime: "11:00 AM - 11:30 AM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "11:00 AM - 12:00 PM", field: "Field 1", miniFieldTime: "10:30 AM - 11:00 AM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "11:00 AM - 12:00 PM", field: "Field 2", miniFieldTime: "12:00 PM - 12:30 PM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "12:00 PM - 1:00 PM", field: "Field 1", miniFieldTime: "11:30 AM - 12:00 PM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "12:00 PM - 1:00 PM", field: "Field 2", miniFieldTime: "1:00 PM - 1:30 PM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "1:00 PM - 2:00 PM", field: "Field 1", miniFieldTime: "12:30 PM - 1:00 PM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "1:00 PM - 2:00 PM", field: "Field 2", miniFieldTime: "2:00 PM - 2:30 PM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "2:00 PM - 3:00 PM", field: "Field 1", miniFieldTime: "1:30 PM - 2:00 PM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "2:00 PM - 3:00 PM", field: "Field 2", miniFieldTime: "3:00 PM - 3:30 PM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "3:00 PM - 4:00 PM", field: "Field 1", miniFieldTime: "2:30 PM - 3:00 PM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "3:00 PM - 4:00 PM", field: "Field 2", miniFieldTime: "4:00 PM - 4:30 PM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "4:00 PM - 5:00 PM", field: "Field 1", miniFieldTime: "3:30 PM - 4:00 PM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "4:00 PM - 5:00 PM", field: "Field 2", miniFieldTime: "5:00 PM - 5:30 PM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "5:00 PM - 6:00 PM", field: "Field 1", miniFieldTime: "4:30 PM - 5:00 PM", Occupant: "", Team: "" },
+            { day: "Sunday", time: "5:00 PM - 6:00 PM", field: "Field 2", miniFieldTime: "6:00 PM - 6:30 PM", Occupant: "", Team: "" },
+            // Monday (Occupied slots from CSV)
+            { day: "Monday", time: "6:00 PM - 7:00 PM", field: "Field 1", miniFieldTime: "5:30 PM - 6:00 PM", Occupant: "Saltz U18/Goal Keepers", Team: "Saltz U18/Goal Keepers" },
+            { day: "Monday", time: "6:00 PM - 7:00 PM", field: "Field 2", miniFieldTime: "7:00 PM - 7:30 PM", Occupant: "Randy Spain", Team: "Randy Spain" },
+            { day: "Monday", time: "7:00 PM - 8:00 PM", field: "Field 1", miniFieldTime: "6:30 PM - 7:00 PM", Occupant: "Todd Christian", Team: "Todd Christian" },
+            { day: "Monday", time: "7:00 PM - 8:00 PM", field: "Field 2", miniFieldTime: "8:00 PM - 8:30 PM", Occupant: "Marc Kirsit/U16 Girls Blue", Team: "Marc Kirsit/U16 Girls Blue" },
+            { day: "Monday", time: "8:00 PM - 9:00 PM", field: "Field 1", miniFieldTime: "7:30 PM - 8:00 PM", Occupant: "Lance Barndt", Team: "Lance Barndt" },
+            { day: "Monday", time: "8:00 PM - 9:00 PM", field: "Field 2", miniFieldTime: "9:00 PM - 9:30 PM", Occupant: "Brenton Windle", Team: "Brenton Windle" },
+            { day: "Monday", time: "5:00 PM - 6:00 PM", field: "Field 1", miniFieldTime: "4:30 PM - 5:00 PM", Occupant: "Columbus Goal Keeper", Team: "Columbus Goal Keeper" },
+            { day: "Monday", time: "5:00 PM - 6:00 PM", field: "Field 2", miniFieldTime: "6:00 PM - 6:30 PM", Occupant: "Randy Spain", Team: "Randy Spain" },
+            // Tuesday (Occupied slots from CSV)
+            { day: "Tuesday", time: "5:00 PM - 6:00 PM", field: "Field 1", miniFieldTime: "4:30 PM - 5:00 PM", Occupant: "Justin Harmill", Team: "Justin Harmill" },
+            { day: "Tuesday", time: "5:00 PM - 6:00 PM", field: "Field 2", miniFieldTime: "6:00 PM - 6:30 PM", Occupant: "Andrew Taylor", Team: "Andrew Taylor" },
+            { day: "Tuesday", time: "6:00 PM - 7:00 PM", field: "Field 1", miniFieldTime: "5:30 PM - 6:00 PM", Occupant: "Tim McVey", Team: "Tim McVey" },
+            { day: "Tuesday", time: "6:00 PM - 7:00 PM", field: "Field 2", miniFieldTime: "7:00 PM - 7:30 PM", Occupant: "Sean Cook", Team: "Sean Cook" },
+            { day: "Tuesday", time: "7:00 PM - 8:00 PM", field: "Field 1", miniFieldTime: "6:30 PM - 7:00 PM", Occupant: "Chad Snider", Team: "Chad Snider" },
+            { day: "Tuesday", time: "7:00 PM - 8:00 PM", field: "Field 2", miniFieldTime: "8:00 PM - 8:30 PM", Occupant: "Sean Cook", Team: "Sean Cook" },
+            { day: "Tuesday", time: "8:00 PM - 9:00 PM", field: "Field 1", miniFieldTime: "7:30 PM - 8:00 PM", Occupant: "Chad Snider", Team: "Chad Snider" },
+            { day: "Tuesday", time: "8:00 PM - 9:00 PM", field: "Field 2", miniFieldTime: "9:00 PM - 9:30 PM", Occupant: "", Team: "" }, // Available
+            // Wednesday (Occupied slots from CSV)
+            { day: "Wednesday", time: "5:00 PM - 6:00 PM", field: "Field 1", miniFieldTime: "4:30 PM - 5:00 PM", Occupant: "Chad Snider", Team: "Chad Snider" },
+            { day: "Wednesday", time: "5:00 PM - 6:00 PM", field: "Field 2", miniFieldTime: "6:00 PM - 6:30 PM", Occupant: "Neil Johnston", Team: "Neil Johnston" },
+            { day: "Wednesday", time: "6:00 PM - 7:00 PM", field: "Field 1", miniFieldTime: "5:30 PM - 6:00 PM", Occupant: "Randy Spain", Team: "Randy Spain" },
+            { day: "Wednesday", time: "6:00 PM - 7:00 PM", field: "Field 2", miniFieldTime: "7:00 PM - 7:30 PM", Occupant: "Todd Christian", Team: "Todd Christian" },
+            { day: "Wednesday", time: "7:00 PM - 8:00 PM", field: "Field 1", miniFieldTime: "6:30 PM - 7:00 PM", Occupant: "Randy Spain", Team: "Randy Spain" },
+            { day: "Wednesday", time: "7:00 PM - 8:00 PM", field: "Field 2", miniFieldTime: "8:00 PM - 8:30 PM", Occupant: "Todd Christian", Team: "Todd Christian" },
+            { day: "Wednesday", time: "8:00 PM - 9:00 PM", field: "Field 1", miniFieldTime: "7:30 PM - 8:00 PM", Occupant: "Lance Barndt", Team: "Lance Barndt" },
+            { day: "Wednesday", time: "8:00 PM - 9:00 PM", field: "Field 2", miniFieldTime: "9:00 PM - 9:30 PM", Occupant: "Marc Kirsit/U16 Girls Blue", Team: "Marc Kirsit/U16 Girls Blue" },
+            // Thursday (Occupied slots from CSV)
+            { day: "Thursday", time: "5:00 PM - 6:00 PM", field: "Field 1", miniFieldTime: "4:30 PM - 5:00 PM", Occupant: "Brenton Windle", Team: "Brenton Windle" },
+            { day: "Thursday", time: "5:00 PM - 6:00 PM", field: "Field 2", miniFieldTime: "6:00 PM - 6:30 PM", Occupant: "Justin Harmill", Team: "Justin Harmill" },
+            { day: "Thursday", time: "6:00 PM - 7:00 PM", field: "Field 1", miniFieldTime: "5:30 PM - 6:00 PM", Occupant: "Andrew Taylor", Team: "Andrew Taylor" },
+            { day: "Thursday", time: "6:00 PM - 7:00 PM", field: "Field 2", miniFieldTime: "7:00 PM - 7:30 PM", Occupant: "Tim McVey", Team: "Tim McVey" },
+            { day: "Thursday", time: "7:00 PM - 8:00 PM", field: "Field 1", miniFieldTime: "6:30 PM - 7:00 PM", Occupant: "Sean Cook", Team: "Sean Cook" },
+            { day: "Thursday", time: "7:00 PM - 8:00 PM", field: "Field 2", miniFieldTime: "8:00 PM - 8:30 PM", Occupant: "Chad Snider", Team: "Chad Snider" },
+            { day: "Thursday", time: "8:00 PM - 9:00 PM", field: "Field 1", miniFieldTime: "7:30 PM - 8:00 PM", Occupant: "Sean Cook", Team: "Sean Cook" },
+            { day: "Thursday", time: "8:00 PM - 9:00 PM", field: "Field 2", miniFieldTime: "9:00 PM - 9:30 PM", Occupant: "Chad Snider", Team: "Chad Snider" },
+            // Friday (5:00 PM - 9:00 PM - All Available)
+            { day: "Friday", time: "5:00 PM - 6:00 PM", field: "Field 1", miniFieldTime: "4:30 PM - 5:00 PM", Occupant: "", Team: "" },
+            { day: "Friday", time: "5:00 PM - 6:00 PM", field: "Field 2", miniFieldTime: "6:00 PM - 6:30 PM", Occupant: "", Team: "" },
+            { day: "Friday", time: "6:00 PM - 7:00 PM", field: "Field 1", miniFieldTime: "5:30 PM - 6:00 PM", Occupant: "", Team: "" },
+            { day: "Friday", time: "6:00 PM - 7:00 PM", field: "Field 2", miniFieldTime: "7:00 PM - 7:30 PM", Occupant: "", Team: "" },
+            { day: "Friday", time: "7:00 PM - 8:00 PM", field: "Field 1", miniFieldTime: "6:30 PM - 7:00 PM", Occupant: "", Team: "" },
+            { day: "Friday", time: "7:00 PM - 8:00 PM", field: "Field 2", miniFieldTime: "8:00 PM - 8:30 PM", Occupant: "", Team: "" },
+            { day: "Friday", time: "8:00 PM - 9:00 PM", field: "Field 1", miniFieldTime: "7:30 PM - 8:00 PM", Occupant: "", Team: "" },
+            { day: "Friday", time: "8:00 PM - 9:00 PM", field: "Field 2", miniFieldTime: "9:00 PM - 9:30 PM", Occupant: "", Team: "" },
+            // Saturday (8:00 AM - 12:00 PM - Some Pre-booked)
+            { day: "Saturday", time: "8:00 AM - 9:00 AM", field: "Field 1", miniFieldTime: "7:30 AM - 8:00 AM", Occupant: "Adult Pickup", Team: "Adult Pickup" },
+            { day: "Saturday", time: "8:00 AM - 9:00 AM", field: "Field 2", miniFieldTime: "9:00 AM - 9:30 AM", Occupant: "Adult Pickup", Team: "Adult Pickup" },
+            { day: "Saturday", time: "9:00 AM - 10:00 AM", field: "Field 1", miniFieldTime: "8:30 AM - 9:00 AM", Occupant: "Adult Pickup", Team: "Adult Pickup" },
+            { day: "Saturday", time: "9:00 AM - 10:00 AM", field: "Field 2", miniFieldTime: "10:00 AM - 10:30 AM", Occupant: "Adult Pickup", Team: "Adult Pickup" },
+            { day: "Saturday", time: "10:00 AM - 11:00 AM", field: "Field 1", miniFieldTime: "9:30 PM - 10:00 PM", Occupant: "Neil Johnston", Team: "Neil Johnston" },
+            { day: "Saturday", time: "10:00 AM - 11:00 AM", field: "Field 2", miniFieldTime: "11:00 AM - 11:30 AM", Occupant: "", Team: "" }, // Available
+            { day: "Saturday", time: "11:00 AM - 12:00 PM", field: "Field 1", miniFieldTime: "10:30 AM - 11:00 AM", Occupant: "Neil Johnston", Team: "Neil Johnston" },
+            { day: "Saturday", time: "11:00 AM - 12:00 PM", field: "Field 2", miniFieldTime: "12:00 PM - 12:30 PM", Occupant: "", Team: "" }, // Available
+            { day: "Saturday", time: "12:00 PM - 1:00 PM", field: "Field 1", miniFieldTime: "11:30 AM - 12:00 PM", Occupant: "", Team: "" }, // Available
+            { day: "Saturday", time: "12:00 PM - 1:00 PM", field: "Field 2", miniFieldTime: "1:00 PM - 1:30 PM", Occupant: "", Team: "" }, // Available
+            // Saturday (1:00 PM - 8:00 PM - All Available)
+            { day: "Saturday", time: "1:00 PM - 2:00 PM", field: "Field 1", miniFieldTime: "12:30 PM - 1:00 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "1:00 PM - 2:00 PM", field: "Field 2", miniFieldTime: "2:00 PM - 2:30 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "2:00 PM - 3:00 PM", field: "Field 1", miniFieldTime: "1:30 PM - 2:00 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "2:00 PM - 3:00 PM", field: "Field 2", miniFieldTime: "3:00 PM - 3:30 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "3:00 PM - 4:00 PM", field: "Field 1", miniFieldTime: "2:30 PM - 3:00 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "3:00 PM - 4:00 PM", field: "Field 2", miniFieldTime: "4:00 PM - 4:30 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "4:00 PM - 5:00 PM", field: "Field 1", miniFieldTime: "3:30 PM - 4:00 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "4:00 PM - 5:00 PM", field: "Field 2", miniFieldTime: "5:00 PM - 5:30 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "5:00 PM - 6:00 PM", field: "Field 1", miniFieldTime: "4:30 PM - 5:00 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "5:00 PM - 6:00 PM", field: "Field 2", miniFieldTime: "6:00 PM - 6:30 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "6:00 PM - 7:00 PM", field: "Field 1", miniFieldTime: "5:30 PM - 6:00 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "6:00 PM - 7:00 PM", field: "Field 2", miniFieldTime: "7:00 PM - 7:30 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "7:00 PM - 8:00 PM", field: "Field 1", miniFieldTime: "6:30 PM - 7:00 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "7:00 PM - 8:00 PM", field: "Field 2", miniFieldTime: "8:00 PM - 8:30 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "8:00 PM - 9:00 PM", field: "Field 1", miniFieldTime: "7:30 PM - 8:00 PM", Occupant: "", Team: "" },
+            { day: "Saturday", time: "8:00 PM - 9:00 PM", field: "Field 2", miniFieldTime: "9:00 PM - 9:30 PM", Occupant: "", Team: "" }
+        ];
+        
+        // Process raw data to add sorting timestamp
+        const initialSlots = initialSlotsRaw.map(slot => ({
+            ...slot,
+            timestamp: generateTimestamp(slot.day, slot.time, slot.field),
+            capacity: 1 // Fixed capacity per requirement
+        }));
+        // --------------------------------------------------------------------------------
+
+
+        // --- Authentication Handlers ---
+
+        const logIn = async () => {
+            try {
+                const provider = new GoogleAuthProvider();
+                await signInWithPopup(auth, provider);
+                showMessage('Logged in successfully!', 'success');
+            } catch (error) {
+                console.error("Login failed:", error);
+                showMessage(`Login failed: ${error.message}`, 'error');
+            }
+        };
+
+        const logOut = async () => {
+            try {
+                await signOut(auth);
+                showMessage('Logged out successfully.', 'success');
+            } catch (error) {
+                console.error("Logout failed:", error);
+                showMessage(`Logout failed: ${error.message}`, 'error');
+            }
+        };
+        
+        window.logIn = logIn;
+        window.logOut = logOut;
+        
+        // --- NEW Admin Mode Toggle Function ---
+        const toggleAdminMode = (e) => {
+            if (!isAdmin) {
+                 showMessage("Only registered administrators can enable this mode.", "error");
+                 e.target.checked = false; 
+                 return;
+            }
+            isAdminModeEnabled = e.target.checked;
+            
+            const adminIndicator = document.getElementById('admin-indicator');
+            if (isAdminModeEnabled) {
+                adminIndicator.classList.remove('hidden');
+                showMessage("Admin Mode is now ENABLED. You can reset any booked slot.", "warning");
+            } else {
+                adminIndicator.classList.add('hidden');
+                showMessage("Admin Mode is now disabled.", "success");
+            }
+            filterAndRenderSlots(); 
+        };
+        window.toggleAdminMode = toggleAdminMode;
+
+
+        // 1. Data Initialization (Run once on first load if collection is empty)
+        const initializeData = async () => {
+            const q = query(getPublicCollectionRef('trainingSlots'));
+            const snapshot = await getDocs(q);
+
+            if (snapshot.empty) {
+                console.log("Initializing training slots data...");
+                for (const slot of initialSlots) {
+                    const docRef = doc(getPublicCollectionRef('trainingSlots'));
+
+                    const signedUpTeams = [];
+                    let isFull = false;
+
+                    // Check for pre-booked slots based on Occupant/Team data
+                    if (slot.Occupant && slot.Team) {
+                        const prebookedId = `PREBOOKED_${Math.random().toString(16).slice(2)}`;
+                        signedUpTeams.push({
+                            teamName: slot.Team,
+                            coachName: slot.Occupant, // Use Occupant as the Coach Name for pre-booked slots
+                            coachId: prebookedId, // Use a non-user ID for static admin bookings
+                            timestamp: 0, // Indicates static booking
+                            prebooked: true
+                        });
+                        isFull = true;
+                    }
+
+                    await setDoc(docRef, {
+                        day: slot.day,
+                        time: slot.time,
+                        field: slot.field,
+                        capacity: slot.capacity,
+                        miniFieldTime: slot.miniFieldTime,
+                        timestamp: slot.timestamp,
+                        note: slot.note || null,
+                        id: docRef.id,
+                        signedUpTeams: signedUpTeams,
+                        isFull: isFull,
+                    });
+                }
+                console.log("Initial training slots created.");
+            } else {
+                console.log("Training slots already exist. Skipping initialization.");
+            }
+        };
+
+        // 2. Authentication and Auth State Listener
+        onAuthStateChanged(auth, async (user) => {
+            const loginButton = document.getElementById('login-button');
+            const adminToggleContainer = document.getElementById('admin-toggle-container'); 
+            
+            // Hide the indicator and reset mode state on auth change until determined
+            document.getElementById('admin-indicator').classList.add('hidden');
+            isAdminModeEnabled = false;
+
+            if (user) {
+                currentUserId = user.uid;
+                isAdmin = ADMIN_USER_IDS.includes(currentUserId); // Check admin status
+                
+                // Display user's email or 'Guest' if using anonymous sign-in without email
+                const email = user.email || 'Guest';
+                loginButton.textContent = `Logout (${email})`;
+                loginButton.onclick = logOut;
+
+                if (isAdmin) {
+                    adminToggleContainer.classList.remove('hidden');
+                    document.getElementById('admin-mode-toggle').checked = isAdminModeEnabled; // Ensure visual state matches
+                } else {
+                    adminToggleContainer.classList.add('hidden');
+                }
+
+                // Data fetching/rendering starts only AFTER authentication setup
+                await initializeData();
+                setupRealtimeListener();
+
+            } else {
+                currentUserId = null;
+                isAdmin = false;
+                loginButton.textContent = 'Login with Google';
+                loginButton.onclick = logIn;
+                adminToggleContainer.classList.add('hidden');
+            }
+        });
+        
+        // --- Filtering Logic ---
+
+        const filterAndRenderSlots = () => {
+            let slotsToRender = allSlots;
+            
+            // 1. Apply Day Filter
+            if (selectedDayFilter !== 'All') {
+                slotsToRender = slotsToRender.filter(slot => slot.day === selectedDayFilter);
+            }
+
+            // 2. Apply Availability Filter
+            if (showAvailableOnly) {
+                slotsToRender = slotsToRender.filter(slot => !slot.isFull);
+            }
+            
+            renderSlots(slotsToRender);
+        };
+
+        document.getElementById('day-filter').addEventListener('change', (e) => {
+            selectedDayFilter = e.target.value;
+            filterAndRenderSlots();
+        });
+        
+        // Event listener for the "Show Available Only" toggle
+        document.getElementById('available-toggle').addEventListener('change', (e) => {
+            showAvailableOnly = e.target.checked;
+            filterAndRenderSlots();
+        });
+
+
+        // 3. Real-time Listener (onSnapshot)
+        const setupRealtimeListener = () => {
+            const slotsRef = getPublicCollectionRef('trainingSlots');
+            const q = query(slotsRef);
+
+            onSnapshot(q, (snapshot) => {
+                allSlots = [];
+                snapshot.forEach((doc) => {
+                    const data = doc.data();
+                    // Ensure signedUpTeams is an array, calculate fullness
+                    data.signedUpTeams = data.signedUpTeams || [];
+                    data.isFull = data.signedUpTeams.length >= data.capacity;
+                    data.isUserBooked = data.signedUpTeams.some(team => team.coachId === currentUserId);
+                    allSlots.push(data);
+                });
+                // Sort once globally by timestamp
+                allSlots.sort((a, b) => a.timestamp - b.timestamp);
+                
+                // Apply the current filter and render
+                filterAndRenderSlots();
+            }, (error) => {
+                console.error("Error listening to slots:", error);
+                showMessage(`Error loading data: ${error.message}`, 'error');
+            });
+        };
+
+        // 4. Render Slots UI
+        const renderSlots = (slots) => {
+            const container = document.getElementById('slots-container');
+            container.innerHTML = ''; // Clear previous content
+
+            if (slots.length === 0) {
+                container.innerHTML = '<p class="text-center text-gray-500 py-8">No training slots currently defined for this filter.</p>';
+                return;
+            }
+
+            slots.forEach(slot => {
+                const isFull = slot.isFull;
+                const isUserBooked = slot.isUserBooked;
+                const availableSpots = slot.capacity - slot.signedUpTeams.length;
+
+                // Updated card styles for sleeker look
+                const baseCardClass = 'slot-card p-4 rounded-xl bg-white shadow-sm border border-gray-100 fade-in';
+
+                const cardClasses = isFull
+                    ? `${baseCardClass} bg-gray-50 border-gray-200 cursor-not-allowed opacity-90`
+                    : isUserBooked
+                        ? `${baseCardClass} bg-indigo-50 border-indigo-200 cursor-pointer slot-card-available ring-1 ring-indigo-200`
+                        : `${baseCardClass} cursor-pointer slot-card-available`;
+
+                let buttonText;
+                let buttonClasses = 'w-full py-2 px-4 rounded-lg font-medium shadow-sm transition-all duration-200 ease-in-out text-sm focus:outline-none focus:ring-2 focus:ring-offset-1 ';
+
+                // Admin button overrides all other button logic, only if mode is enabled AND the slot is currently booked
+                if (isAdmin && isAdminModeEnabled && isFull) {
+                    buttonText = 'Admin Reset Slot';
+                    buttonClasses += 'btn-danger text-white focus:ring-red-500';
+                } else if (isUserBooked) {
+                    buttonText = 'Cancel';
+                    buttonClasses += 'btn-danger text-white focus:ring-red-500';
+                } else if (isFull) {
+                    buttonText = 'Booked';
+                    buttonClasses += 'bg-gray-200 text-gray-500 cursor-not-allowed';
+                } else {
+                    buttonText = 'Book';
+                    buttonClasses += 'btn-primary text-white focus:ring-indigo-500';
+                }
+
+                // Check logged in state for button text and disable status
+                const finalButtonText = (!currentUserId && !isUserBooked && !isFull && !isAdminModeEnabled) ? 'Login to Book' : buttonText;
+                const finalButtonDisabled = !(isAdmin && isAdminModeEnabled && isFull) && ((isFull && !isUserBooked) || (!currentUserId && !isUserBooked));
+
+                const bookedDetails = slot.signedUpTeams.map(team => {
+                    // Check if the slot was pre-booked by admin
+                    const coachIdDisplay = team.prebooked ? 'Admin' : `Coach: ${team.coachName || 'N/A'}`;
+                    return `
+                    <li class="flex flex-col sm:flex-row sm:justify-between text-sm text-gray-600 mt-2 p-2 bg-gray-50 rounded-lg">
+                        <span class="font-medium truncate text-gray-800">${team.teamName}</span>
+                        <span class="text-xs text-gray-500 mt-1 sm:mt-0">${team.prebooked ? 'Status: Pre-booked' : coachIdDisplay}</span>
+                    </li>
+                `;
+                }).join('');
+
+                // Tighter spacing on booked section
+                const bookedSection = slot.signedUpTeams.length > 0 ? `
+                    <div class="mt-3 border-t border-gray-100 pt-2">
+                        <ul class="list-none space-y-1 pl-0">
+                            ${bookedDetails}
+                        </ul>
+                    </div>
+                ` : '';
+
+
+                const noteTag = slot.note ? `<span class="ml-2 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-indigo-100 text-indigo-700 rounded-full">${slot.note}</span>` : '';
+
+                const slotHtml = `
+                    <div id="slot-${slot.id}" class="${cardClasses}">
+                        <div class="flex items-center justify-between mb-2">
+                            <!-- Reduced Title Size -->
+                            <h3 class="text-lg font-bold text-gray-800 tracking-tight">${slot.day} <span class="font-normal text-gray-500 text-base">|</span> ${slot.time}</h3>
+                            ${noteTag}
+                        </div>
+                        
+                        <!-- Badges for Fields -->
+                        <div class="flex flex-wrap gap-2 mb-3">
+                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
+                                ${slot.field}
+                            </span>
+                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-100">
+                                Mini: ${slot.miniFieldTime}
+                            </span>
+                        </div>
+
+                        ${bookedSection}
+
+                        <!-- Button -->
+                        <div class="mt-4">
+                            <button
+                                data-slot-id="${slot.id}"
+                                data-is-full="${isFull}"
+                                data-is-user-booked="${isUserBooked}"
+                                class="action-button ${buttonClasses}"
+                                ${finalButtonDisabled ? 'disabled' : ''}
+                            >
+                                ${finalButtonText}
+                            </button>
+                        </div>
+                    </div>
+                `;
+                container.insertAdjacentHTML('beforeend', slotHtml);
+            });
+
+            // Attach event listeners after rendering
+            document.querySelectorAll('.action-button').forEach(button => {
+                button.addEventListener('click', (e) => {
+                    const slotId = e.currentTarget.dataset.slotId;
+                    const isUserBooked = e.currentTarget.dataset.isUserBooked === 'true';
+                    const slotData = allSlots.find(s => s.id === slotId);
+                    
+                    if (!currentUserId) {
+                        showMessage('Please log in before attempting to book a slot.', 'warning');
+                        return;
+                    }
+
+                    // Check Admin Mode toggle status
+                    if (isAdmin && isAdminModeEnabled && slotData.isFull) {
+                        showAdminResetModal(slotId, slotData);
+                        return;
+                    }
+
+                    // Standard Coach Logic:
+                    const isPrebooked = slotData?.signedUpTeams.some(team => team.prebooked) || false;
+
+                    if (isUserBooked) {
+                        if (isPrebooked) {
+                            showMessage('This slot was pre-booked by the club and cannot be cancelled by a coach.', 'error');
+                        } else {
+                            handleCancel(slotId);
+                        }
+                    } else if (!slotData.isFull) {
+                        showBookingModal(slotId);
+                    } else {
+                        showMessage('This slot is full.', 'error');
+                    }
+                });
+            });
+        };
+
+        // 5. Transaction Functions (Booking and Cancellation)
+        
+        // NEW: Admin Slot Reset Function
+        const handleAdminReset = async (slotId) => {
+            if (!isAdmin || !isAdminModeEnabled) return; // Safety check
+            
+            const slotRef = doc(getPublicCollectionRef('trainingSlots'), slotId);
+            
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const slotDoc = await transaction.get(slotRef);
+                    if (!slotDoc.exists()) {
+                        throw "Slot does not exist!";
+                    }
+
+                    // Reset the slot by clearing all sign-ups
+                    transaction.update(slotRef, {
+                        signedUpTeams: [],
+                        isFull: false
+                    });
+                });
+                showMessage('Admin reset successful. Slot is now available.', 'success');
+            } catch (e) {
+                const message = typeof e === 'string' ? e : e.message;
+                console.error("Admin Reset failed:", e);
+                showMessage(`Admin Reset failed: ${message}`, 'error');
+            }
+        };
+
+        const handleSignup = async (slotId) => {
+            const teamName = document.getElementById('team-name-input').value;
+            const coachName = document.getElementById('coach-name-input-modal').value; // NEW
+            
+            if (!currentUserId || !teamName.trim() || !coachName.trim()) {
+                showMessage('Login, Team Name, and Coach Name are required.', 'warning');
+                return;
+            }
+            
+            const slotRef = doc(getPublicCollectionRef('trainingSlots'), slotId);
+            const bookingObject = {
+                teamName: teamName.trim(),
+                coachName: coachName.trim(), // NEW: Store the coach's name
+                coachId: currentUserId,
+                timestamp: Date.now(),
+                prebooked: false
+            };
+
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const slotDoc = await transaction.get(slotRef);
+                    if (!slotDoc.exists()) {
+                        throw "Slot does not exist!";
+                    }
+
+                    const data = slotDoc.data();
+                    const teams = data.signedUpTeams || [];
+
+                    if (teams.length >= data.capacity) {
+                        throw "This slot is now full. Please select another time.";
+                    }
+                    
+                    // Prevent the same coach from signing up twice
+                    if (teams.some(team => team.coachId === currentUserId)) {
+                         throw "You are already signed up for this slot.";
+                    }
+
+                    // Add the new booking
+                    teams.push(bookingObject);
+
+                    // Update the document with the new array
+                    transaction.update(slotRef, {
+                        signedUpTeams: teams,
+                        isFull: teams.length >= data.capacity
+                    });
+                });
+                showMessage('Successfully signed up for the training slot!', 'success');
+            } catch (e) {
+                const message = typeof e === 'string' ? e : e.message;
+                console.error("Signup failed:", e);
+                showMessage(`Signup failed: ${message}`, 'error');
+            }
+        };
+
+        const handleCancel = async (slotId) => {
+            const slotRef = doc(getPublicCollectionRef('trainingSlots'), slotId);
+
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const slotDoc = await transaction.get(slotRef);
+                    if (!slotDoc.exists()) {
+                        throw "Slot does not exist!";
+                    }
+
+                    const data = slotDoc.data();
+                    let teams = data.signedUpTeams || [];
+
+                    // Only allow cancellation of slots booked by the current user
+                    const teamsBeforeFilter = teams.length;
+                    teams = teams.filter(team => team.coachId !== currentUserId);
+
+                    // If the length didn't change, the user wasn't booked
+                    if (teams.length === teamsBeforeFilter) {
+                        throw "You are not currently signed up for this slot.";
+                    }
+
+                    // Update the document to mark it as available
+                    transaction.update(slotRef, {
+                        signedUpTeams: teams,
+                        isFull: teams.length >= data.capacity
+                    });
+                });
+                showMessage('Training slot successfully cancelled.', 'success');
+            } catch (e) {
+                const message = typeof e === 'string' ? e : e.message;
+                console.error("Cancellation failed:", e);
+                showMessage(`Cancellation failed: ${message}`, 'error');
+            }
+        };
+
+        // 6. Modal and Message Box Functions
+        const modal = document.getElementById('booking-modal');
+        const teamNameInput = document.getElementById('team-name-input');
+        const coachNameInput = document.getElementById('coach-name-input-modal');
+        const confirmBookingButton = document.getElementById('confirm-booking');
+
+        const adminResetModal = document.getElementById('admin-reset-modal');
+        const confirmAdminResetButton = document.getElementById('confirm-admin-reset');
+        const adminSlotInfo = document.getElementById('admin-slot-info');
+
+        const showBookingModal = (slotId) => {
+            confirmBookingButton.dataset.slotId = slotId;
+            modal.classList.remove('hidden');
+        };
+
+        const hideBookingModal = () => {
+            modal.classList.add('hidden');
+        };
+        
+        const showAdminResetModal = (slotId, slotData) => {
+            confirmAdminResetButton.dataset.slotId = slotId;
+            
+            const bookedBy = slotData.signedUpTeams.length > 0 
+                ? slotData.signedUpTeams.map(t => `${t.coachName} (${t.teamName})`).join(', ')
+                : 'No teams currently booked.';
+
+            adminSlotInfo.innerHTML = `
+                <p><strong>Time:</strong> ${slotData.day} | ${slotData.time} on ${slotData.field}</p>
+                <p><strong>Currently Booked:</strong> ${bookedBy}</p>
+            `;
+            adminResetModal.classList.remove('hidden');
+        };
+        
+        const hideAdminResetModal = () => {
+            adminResetModal.classList.add('hidden');
+        };
+
+
+        // Event listener for the Confirm Booking button
+        confirmBookingButton.addEventListener('click', () => {
+            const slotId = confirmBookingButton.dataset.slotId;
+            handleSignup(slotId);
+            hideBookingModal();
+        });
+        
+        // Event listener for the Confirm Admin Reset button
+        confirmAdminResetButton.addEventListener('click', () => {
+            const slotId = confirmAdminResetButton.dataset.slotId;
+            handleAdminReset(slotId);
+            hideAdminResetModal();
+        });
+
+
+        // Event listeners for modal close buttons
+        document.getElementById('close-modal').addEventListener('click', hideBookingModal);
+        document.getElementById('cancel-modal').addEventListener('click', hideBookingModal);
+        document.getElementById('cancel-admin-reset').addEventListener('click', hideAdminResetModal);
+
+        // Message box functions
+        const messageBox = document.getElementById('message-box');
+        const messageText = document.getElementById('message-text');
+
+        function showMessage(message, type) {
+            messageText.textContent = message;
+            messageBox.classList.remove('hidden');
+            messageBox.className = 'fixed top-4 right-4 p-4 rounded-xl shadow-2xl z-50 transition-opacity duration-300 transform translate-y-0';
+
+            let bgColor = 'bg-blue-500'; // Default
+            if (type === 'success') bgColor = 'bg-green-500';
+            if (type === 'error') bgColor = 'bg-red-600';
+            if (type === 'warning') bgColor = 'bg-yellow-500';
+
+            messageBox.classList.add(bgColor, 'text-white');
+
+            // Auto-hide after 4 seconds
+            setTimeout(() => {
+                messageBox.classList.add('hidden');
+            }, 4000);
+        }
+    </script>
+</head>
+<body class="min-h-screen">
+    <div class="max-w-5xl mx-auto p-4 sm:p-6 lg:p-8">
+        <!-- Header -->
+        <header class="text-center mb-10">
+            <h1 class="text-4xl font-extrabold text-gray-900 mb-2 tracking-tight">Indoor Training Slot Sign-up</h1>
+            <p class="text-lg text-gray-600 font-light">Book your 1-hour slot on Field 1 or Field 2. Mini Field usage is automatically included.</p>
+        </header>
+
+        <!-- Control Panel: Day Filter and Login Button -->
+        <div class="flex flex-col sm:flex-row justify-between items-center mb-8 p-5 bg-white rounded-2xl shadow-sm border border-gray-100 space-y-4 sm:space-y-0">
+            <div class="flex flex-col sm:flex-row items-start sm:items-center space-y-4 sm:space-y-0 sm:space-x-6 w-full sm:w-auto">
+                
+                <!-- Day Filter -->
+                <div class="flex items-center space-x-3 w-full sm:w-auto">
+                    <label for="day-filter" class="text-gray-700 font-medium whitespace-nowrap">Filter by Day:</label>
+                    <div class="relative">
+                        <select id="day-filter" class="appearance-none bg-gray-50 border border-gray-200 text-gray-700 py-2 pl-4 pr-8 rounded-lg leading-tight focus:outline-none focus:bg-white focus:border-indigo-500 transition-colors cursor-pointer font-medium">
+                            <option value="All">All Days</option>
+                            <option value="Sunday">Sunday</option>
+                            <option value="Monday">Monday</option>
+                            <option value="Tuesday">Tuesday</option>
+                            <option value="Wednesday">Wednesday</option>
+                            <option value="Thursday">Thursday</option>
+                            <option value="Friday">Friday</option>
+                            <option value="Saturday">Saturday</option>
+                        </select>
+                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-500">
+                            <svg class="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Available Only Toggle -->
+                <div class="flex items-center space-x-3 cursor-pointer select-none">
+                    <input type="checkbox" id="available-toggle" class="h-5 w-5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500 transition duration-150 ease-in-out cursor-pointer">
+                    <label for="available-toggle" class="text-gray-700 font-medium cursor-pointer">Show Available Only</label>
+                </div>
+                
+                <!-- NEW: Admin Toggle Container (Visible only to logged-in admins) -->
+                <div id="admin-toggle-container" class="hidden flex items-center space-x-3 cursor-pointer select-none">
+                    <input type="checkbox" id="admin-mode-toggle" onchange="toggleAdminMode(event)" class="h-5 w-5 text-red-600 rounded border-gray-300 focus:ring-red-500 transition duration-150 ease-in-out cursor-pointer">
+                    <label for="admin-mode-toggle" class="text-red-700 font-medium cursor-pointer">Enable Admin Reset</label>
+                </div>
+                
+                <!-- NEW: Admin Indicator -->
+                <div id="admin-indicator" class="hidden px-3 py-1 bg-red-100 text-red-700 font-medium rounded-full text-xs border border-red-200">
+                    ADMIN MODE ACTIVE
+                </div>
+            </div>
+            
+            <!-- Login/Logout Button -->
+            <button id="login-button" class="px-5 py-2.5 bg-gray-900 text-white font-medium rounded-lg shadow hover:bg-gray-800 transition duration-150 ease-in-out w-full sm:w-auto text-sm tracking-wide">
+                Loading Auth...
+            </button>
+        </div>
+
+        <!-- Slots List Container -->
+        <div class="bg-white p-6 sm:p-8 rounded-2xl shadow-xl shadow-gray-200/50 border border-gray-100">
+            <h2 class="text-2xl font-bold text-gray-800 border-b border-gray-100 pb-4 mb-6">Available Training Slots</h2>
+            <div id="slots-container" class="grid grid-cols-1 md:grid-cols-2 gap-5 slot-list max-h-[65vh] overflow-y-auto pr-2">
+                <!-- Slots will be rendered here by JavaScript -->
+                <p class="text-center text-gray-500 py-12 font-light">Loading slots...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Booking Confirmation Modal -->
+    <div id="booking-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-60 backdrop-blur-sm flex items-center justify-center z-50 transition-all duration-300 fade-in">
+        <div class="bg-white rounded-2xl p-8 shadow-2xl max-w-md w-full transform transition-all border border-gray-100 mx-4">
+            <div class="flex justify-between items-start mb-6">
+                <h3 class="text-2xl font-bold text-gray-900">Confirm Sign Up</h3>
+                <button id="close-modal" class="text-gray-400 hover:text-gray-600 transition-colors">
+                    <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            
+            <p class="text-gray-600 mb-6 font-light">Please enter your **Coach Name** and **Team Name** to confirm the booking.</p>
+            
+            <div class="space-y-4">
+                <div>
+                    <label for="coach-name-input-modal" class="block text-sm font-medium text-gray-700 mb-1">Coach Name</label>
+                    <input type="text" id="coach-name-input-modal" placeholder="e.g., John Smith" class="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-shadow outline-none">
+                </div>
+                
+                <div>
+                    <label for="team-name-input" class="block text-sm font-medium text-gray-700 mb-1">Team Name</label>
+                    <input type="text" id="team-name-input" placeholder="e.g., U14 Girls" class="w-full p-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-shadow outline-none">
+                </div>
+            </div>
+            
+            <div class="flex justify-end space-x-3 mt-8">
+                <button id="cancel-modal" class="px-5 py-2.5 text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg font-medium transition-colors">Cancel</button>
+                <button id="confirm-booking" data-slot-id="" class="px-5 py-2.5 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 shadow-md shadow-indigo-200 transition-all transform active:scale-95">Confirm Booking</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- NEW: Admin Reset Modal -->
+    <div id="admin-reset-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-60 backdrop-blur-sm flex items-center justify-center z-50 transition-all duration-300 fade-in">
+        <div class="bg-white rounded-2xl p-8 shadow-2xl max-w-md w-full transform transition-all border border-gray-100 mx-4">
+            <h3 class="text-2xl font-bold text-red-700 mb-4">Admin Slot Reset</h3>
+            <p class="text-gray-700 mb-6 font-light">
+                You are about to clear **all** current bookings for this slot and make it available again. This action is irreversible.
+            </p>
+            <div id="admin-slot-info" class="p-4 bg-red-50 rounded-xl text-red-800 font-medium mb-6 text-sm border border-red-200">
+                <!-- Slot details populate here -->
+            </div>
+            <div class="flex justify-end space-x-3">
+                <button id="cancel-admin-reset" class="px-5 py-2.5 text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg font-medium transition-colors">Cancel</button>
+                <button id="confirm-admin-reset" data-slot-id="" class="px-5 py-2.5 btn-danger text-white rounded-lg font-medium shadow-md shadow-red-200 transition-all transform active:scale-95">Confirm Reset</button>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- Message Box -->
+    <div id="message-box" class="hidden fixed top-4 right-4 p-4 rounded-xl shadow-2xl z-50 transition-all duration-300 transform translate-y-0">
+        <div class="flex items-center">
+            <p id="message-text" class="font-medium text-sm"></p>
+        </div>
+    </div>
+</body>
+</html>
