@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Read-Only Training Schedule Preview</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Outfit Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: #f3f4f6;
+        }
+
+        /* ------------------------------------------------ */
+        /* Calendar Grid Styling */
+        /* ------------------------------------------------ */
+        .schedule-grid {
+            /* 7 days + 1 time column */
+            grid-template-columns: 80px repeat(7, minmax(100px, 1fr)); 
+            border-left: 1px solid #e5e7eb;
+            border-bottom: 1px solid #e5e7eb;
+            overflow-x: auto; /* Allow horizontal scroll on mobile */
+            -webkit-overflow-scrolling: touch;
+            min-width: 700px; /* Ensure basic visibility on small screens */
+        }
+        
+        .time-slot-cell {
+            padding: 4px;
+            min-height: 48px; 
+            border-top: 1px solid #e5e7eb;
+            border-right: 1px solid #e5e7eb;
+        }
+
+        /* Time Column Styling */
+        .time-label {
+            position: sticky;
+            left: 0;
+            z-index: 10;
+            background-color: #f9fafb;
+            font-weight: 500;
+            padding-left: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            border-right: 1px solid #e5e7eb;
+        }
+
+        /* Status Colors */
+        .status-available {
+            background-color: #d1fae5; /* green-100 */
+            color: #065f46; /* green-800 */
+            font-weight: 500;
+        }
+        .status-booked {
+            background-color: #fee2e2; /* red-100 */
+            color: #991b1b; /* red-800 */
+        }
+        .status-full {
+            background-color: #e5e7eb; /* gray-200 */
+            color: #6b7280; /* gray-500 */
+        }
+        
+        /* Mobile adjustments for header visibility */
+        .day-header {
+            position: sticky;
+            top: 0;
+            z-index: 20;
+            background-color: #ffffff;
+            border-bottom: 2px solid #e5e7eb;
+        }
+    </style>
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getFirestore, onSnapshot, collection, query, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Configuration loaded from your Firebase project (read-only access needed)
+        const firebaseConfig = {
+            apiKey: "AIzaSyCwd2osR1R4o_x7elLENW0U-Fq79UeR5EU",
+            authDomain: "indoor-facility-scheduler.firebaseapp.com",
+            projectId: "indoor-facility-scheduler",
+            storageBucket: "indoor-facility-scheduler.firebasestorage.app",
+            messagingSenderId: "763643303284",
+            appId: "1:763643303284:web:87b990b1e17c8862644821",
+            measurementId: "G-60GJVX5HRY"
+        }; 
+        
+        const appId = firebaseConfig.projectId;
+        
+        let db;
+        let scheduleData = {}; // Stores grouped slots for the calendar view
+        const DAYS_OF_WEEK = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+        const app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+
+        // Helper function for base paths
+        const getPublicCollectionRef = (collectionName) => {
+            return collection(db, `artifacts/${appId}/public/data/${collectionName}`);
+        };
+
+        // --- Utility Functions ---
+        
+        // This helper finds the unique hour slots used across the schedule
+        const getUniqueTimeSlots = (slots) => {
+            const times = new Set();
+            slots.forEach(slot => {
+                // Use the start hour for grouping rows
+                const hour = slot.time.split('-')[0].trim();
+                times.add(hour);
+            });
+            // Sort times chronologically (simple PM/AM logic is assumed to be handled by original data format)
+            return Array.from(times).sort((a, b) => {
+                 // Simple 24h conversion for accurate sorting (same logic as used for timestamp generation)
+                const timeTo24HourSort = (timeStr) => {
+                    let [time, modifier] = timeStr.split(' ');
+                    let [hours] = time.split(':');
+                    hours = parseInt(hours, 10);
+                    if (modifier === 'PM' && hours < 12) hours += 12;
+                    if (modifier === 'AM' && hours === 12) hours = 0;
+                    return hours;
+                };
+                return timeTo24HourSort(a) - timeTo24HourSort(b);
+            });
+        };
+
+        // --- Data Fetching and Grouping ---
+
+        const setupRealtimeListener = () => {
+            const slotsRef = getPublicCollectionRef('trainingSlots');
+            const q = query(slotsRef);
+
+            onSnapshot(q, (snapshot) => {
+                const rawSlots = [];
+                snapshot.forEach((doc) => {
+                    const data = doc.data();
+                    data.signedUpTeams = data.signedUpTeams || [];
+                    data.isFull = data.signedUpTeams.length >= data.capacity;
+                    rawSlots.push(data);
+                });
+                
+                // Group data into a structure suitable for the weekly grid: scheduleData[time][day][field]
+                scheduleData = {};
+                rawSlots.forEach(slot => {
+                    const timeKey = slot.time.split('-')[0].trim(); // Group by start hour
+                    if (!scheduleData[timeKey]) scheduleData[timeKey] = {};
+                    if (!scheduleData[timeKey][slot.day]) scheduleData[timeKey][slot.day] = [];
+                    
+                    // Add the slot details (Field 1 and Field 2 within the same day/hour)
+                    scheduleData[timeKey][slot.day].push(slot);
+                });
+                
+                renderCalendar();
+            }, (error) => {
+                console.error("Error listening to slots:", error);
+                document.getElementById('schedule-container').innerHTML = '<p class="text-center text-red-600 py-12">Error: Failed to load schedule data from Firestore.</p>';
+            });
+        };
+
+        // --- Rendering Logic ---
+
+        const renderCalendar = () => {
+            const container = document.getElementById('schedule-container');
+            const uniqueTimes = getUniqueTimeSlots(Object.values(scheduleData).flatMap(Object.values).flat());
+            
+            let gridHtml = `
+                <div class="schedule-grid grid grid-cols-8 border-t border-r border-gray-200 text-xs">
+            `;
+            
+            // Header Row (Day Labels)
+            gridHtml += `<div class="day-header time-label">Time</div>`; // Empty top-left cell
+            DAYS_OF_WEEK.forEach(day => {
+                gridHtml += `<div class="day-header time-slot-cell text-center font-bold text-gray-700">${day}</div>`;
+            });
+            
+            // Data Rows (Time Slots)
+            uniqueTimes.forEach(timeKey => {
+                // Time Label (Sticky column)
+                gridHtml += `<div class="time-slot-cell time-label">${timeKey}</div>`;
+                
+                DAYS_OF_WEEK.forEach(day => {
+                    const slots = scheduleData[timeKey] ? scheduleData[timeKey][day] || [] : [];
+                    
+                    gridHtml += `<div class="time-slot-cell space-y-1">`;
+                    
+                    if (slots.length > 0) {
+                        slots.sort((a, b) => a.field.localeCompare(b.field));
+                        
+                        slots.forEach(slot => {
+                            const isBooked = slot.signedUpTeams.length > 0;
+                            const statusClass = isBooked ? 'status-booked' : 'status-available';
+                            
+                            const teamInfo = isBooked 
+                                ? `<p class="truncate text-[10px] leading-tight font-normal">${slot.signedUpTeams[0].teamName}</p>`
+                                : '';
+                                
+                            const fieldLabel = slot.field.replace('Field', 'F');
+                            
+                            gridHtml += `
+                                <div class="${statusClass} rounded-md p-1 leading-none shadow-sm">
+                                    <p class="text-xs font-semibold">${fieldLabel}: ${slot.time}</p>
+                                    ${teamInfo}
+                                    <p class="text-[10px] font-normal text-opacity-80">Mini: ${slot.miniFieldTime}</p>
+                                </div>
+                            `;
+                        });
+                    } else {
+                        gridHtml += `<p class="text-xs text-gray-400 font-light">Closed</p>`;
+                    }
+                    
+                    gridHtml += `</div>`; // Close time-slot-cell
+                });
+            });
+
+            gridHtml += `</div>`; // Close schedule-grid
+            container.innerHTML = gridHtml;
+        };
+        
+        // --- Initial Load ---
+        document.addEventListener('DOMContentLoaded', () => {
+            setupRealtimeListener();
+        });
+    </script>
+</head>
+<body class="min-h-screen">
+    <div class="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
+        <!-- Header -->
+        <header class="text-center mb-10">
+            <h1 class="text-4xl font-extrabold text-gray-900 mb-2 tracking-tight">Weekly Training Schedule Preview</h1>
+            <p class="text-lg text-gray-600 font-light">
+                View current availability across Field 1 and Field 2, including associated Mini Field usage.
+            </p>
+        </header>
+
+        <!-- Legend -->
+        <div class="mb-6 flex justify-center space-x-6 text-sm font-medium">
+            <span class="flex items-center">
+                <span class="w-3 h-3 rounded-full status-available mr-2 border border-green-300"></span>
+                Available
+            </span>
+            <span class="flex items-center">
+                <span class="w-3 h-3 rounded-full status-booked mr-2 border border-red-300"></span>
+                Booked
+            </span>
+        </div>
+
+        <!-- Schedule Grid Container (Scrollable horizontally) -->
+        <div class="bg-white p-4 sm:p-6 rounded-2xl shadow-xl shadow-gray-200/50 border border-gray-100">
+            <h3 class="text-xl font-bold text-gray-800 mb-4">Indoor Facility Schedule (One-Hour Slots)</h3>
+            <div id="schedule-container" class="relative">
+                <!-- Schedule Grid will be rendered here by JavaScript -->
+                <p class="text-center text-gray-500 py-12 font-light">Loading schedule...</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

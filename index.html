@@ -26,7 +26,7 @@
             to { opacity: 1; transform: translateY(0); }
         }
 
-        /* Custom scrollbar */
+        /* Custom scrollbar (Removed fixed-height scroll, so this is less critical) */
         .slot-list::-webkit-scrollbar {
             width: 6px;
         }
@@ -93,6 +93,7 @@
         let allSlots = []; // Global state to hold all slots fetched from Firestore
         let selectedDayFilter = 'All'; // Current filter state
         let showAvailableOnly = false; // Availability filter state
+        let showMyBookingsOnly = false; // My Bookings filter state
         let isAdmin = false; // User's admin status (UID check)
         let isAdminModeEnabled = false; // Toggle state for enabling admin actions
         
@@ -142,7 +143,7 @@
         // --- End Helpers ---
 
         // --------------------------------------------------------------------------------
-        // 1. FULL SCHEDULE DATA EMBEDDED FROM USER'S CSV IMAGE
+        // 1. FULL SCHEDULE DATA EMBEDDED FROM USER'S CSV IMAGE (FINAL VERSION)
         // --------------------------------------------------------------------------------
         const initialSlotsRaw = [
             // Sunday
@@ -377,9 +378,8 @@
                     adminToggleContainer.classList.add('hidden');
                 }
 
-                // Data fetching/rendering starts only AFTER authentication setup
-                await initializeData();
-                setupRealtimeListener();
+                // Re-filter to update button states (login status changed)
+                filterAndRenderSlots();
 
             } else {
                 currentUserId = null;
@@ -387,6 +387,9 @@
                 loginButton.textContent = 'Login with Google';
                 loginButton.onclick = logIn;
                 adminToggleContainer.classList.add('hidden');
+                
+                // Re-filter to update button states (logged out)
+                filterAndRenderSlots();
             }
         });
         
@@ -405,15 +408,20 @@
                 slotsToRender = slotsToRender.filter(slot => !slot.isFull);
             }
 
-            // 3. Apply My Bookings Filter (NEW)
+            // 3. Apply My Bookings Filter (Fixed logic)
             if (showMyBookingsOnly) {
                 if (currentUserId) {
                     slotsToRender = slotsToRender.filter(slot => slot.isUserBooked);
                 } else {
-                    showMessage('Please log in to filter by your bookings.', 'warning');
+                    // Reset filter if user is not logged in and filter is checked
                     document.getElementById('my-bookings-toggle').checked = false;
                     showMyBookingsOnly = false;
-                    // Re-render without the filter applied
+                    
+                    // Re-run filter chain to clean up the UI and slotsToRender list
+                    // We don't show the message here to avoid spamming, as the click listener already showed it.
+                    // Instead, we just let the filter chain proceed with the updated settings.
+                    
+                    // Reset slotsToRender to the original pool filtered by day/availability
                     slotsToRender = allSlots;
                     if (selectedDayFilter !== 'All') {
                         slotsToRender = slotsToRender.filter(slot => slot.day === selectedDayFilter);
@@ -426,22 +434,29 @@
             
             renderSlots(slotsToRender);
         };
+        
+        // --- Event Listeners for Filters ---
 
         document.getElementById('day-filter').addEventListener('change', (e) => {
             selectedDayFilter = e.target.value;
             filterAndRenderSlots();
         });
         
-        // Event listener for the "Show Available Only" toggle
         document.getElementById('available-toggle').addEventListener('change', (e) => {
             showAvailableOnly = e.target.checked;
             filterAndRenderSlots();
         });
         
-        // NEW: Event listener for "Show My Bookings" toggle
         document.getElementById('my-bookings-toggle').addEventListener('change', (e) => {
-            showMyBookingsOnly = e.target.checked;
-            filterAndRenderSlots();
+            if (e.target.checked && !currentUserId) {
+                showMessage('Please log in to filter by your bookings.', 'warning');
+                e.target.checked = false; // Immediately disable the UI checkbox
+                showMyBookingsOnly = false;
+                filterAndRenderSlots(); // Rerun to update the slot list based on other filters
+            } else {
+                showMyBookingsOnly = e.target.checked;
+                filterAndRenderSlots();
+            }
         });
 
 
@@ -468,6 +483,8 @@
             }, (error) => {
                 console.error("Error listening to slots:", error);
                 showMessage(`Error loading data: ${error.message}`, 'error');
+                // Crucial: If listener fails, display a message instead of stuck "Loading Slots..."
+                document.getElementById('slots-container').innerHTML = '<p class="text-center text-red-600 py-8">Error: Failed to connect to real-time database. Please check console for details.</p>';
             });
         };
 
@@ -836,6 +853,10 @@
                 messageBox.classList.add('hidden');
             }, 4000);
         }
+
+        // Move initialization outside of onAuthStateChanged (FIX for data loading on page load)
+        initializeData();
+        setupRealtimeListener();
     </script>
 </head>
 <body class="min-h-screen">
@@ -902,10 +923,16 @@
 
         <!-- Slots List Container -->
         <div class="bg-white p-6 sm:p-8 rounded-2xl shadow-xl shadow-gray-200/50 border border-gray-100">
-            <h2 class="text-2xl font-bold text-gray-800 border-b border-gray-100 pb-4 mb-6">Available Training Slots</h2>
-            <div id="slots-container" class="grid grid-cols-1 md:grid-cols-2 gap-5 slot-list max-h-[65vh] overflow-y-auto pr-2">
+            <div class="flex items-center justify-between border-b border-gray-100 pb-4 mb-6">
+                <h2 class="text-2xl font-bold text-gray-800">Available Training Slots</h2>
+                <span class="text-sm text-gray-500 font-medium whitespace-nowrap">
+                    Time Slots load instantly upon page entry.
+                </span>
+            </div>
+            <div id="slots-container" class="grid grid-cols-1 md:grid-cols-2 gap-5 slot-list">
+                <!-- Removed max-height and overflow classes -->
                 <!-- Slots will be rendered here by JavaScript -->
-                <p class="text-center text-gray-500 py-12 font-light">Loading slots...</p>
+                <p class="text-center text-gray-500 py-12 font-light">Loading schedule...</p>
             </div>
         </div>
     </div>
